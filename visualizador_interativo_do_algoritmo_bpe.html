@@ -1,0 +1,762 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visualizador BPE - Como a IA Aprende a Ler</title>
+    <!-- Carregando Tailwind CSS para layout responsivo e estilização moderna -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        /* Estilos customizados para os blocos estilo LEGO e animações suaves */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+        }
+
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Estilo dos blocos de tokens (Peças de LEGO) */
+        .token-block {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.25rem 0.55rem;
+            margin: 0.15rem;
+            border-radius: 0.5rem;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875rem;
+            font-weight: 700;
+            background-color: #1e293b;
+            border: 1px solid #334155;
+            border-bottom-width: 3px;
+            color: #e2e8f0;
+            transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+            user-select: none;
+        }
+
+        /* Destaque para o bloco recém-criado na rodada atual */
+        .token-block.new-merge {
+            background-color: #059669;
+            border-color: #10b981;
+            border-bottom-color: #047857;
+            color: #ffffff;
+            transform: scale(1.08);
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+        }
+
+        /* Destaque para o bloco que será fundido no próximo passo */
+        .token-block.next-candidate {
+            background-color: #b45309;
+            border-color: #f59e0b;
+            border-bottom-color: #78350f;
+            color: #ffffff;
+        }
+
+        /* Marcador de fim de palavra */
+        .token-end {
+            opacity: 0.65;
+            font-size: 0.75rem;
+            background-color: #0f172a;
+            border-color: #1e293b;
+        }
+
+        /* Barra de progresso do placar */
+        .progress-bar-fill {
+            transition: width 0.4s ease-out;
+        }
+
+        /* Scrollbar estilizada */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #475569;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- Cabeçalho -->
+    <header class="bg-slate-900 border-b border-slate-800 sticky top-0 z-30">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-bold text-xl">
+                    🧩
+                </div>
+                <div>
+                    <h1 class="text-xl font-extrabold tracking-tight text-white">Simulador BPE <span class="text-emerald-400 font-normal text-sm ml-1">(Byte-Pair Encoding)</span></h1>
+                    <p class="text-xs text-slate-400">Veja na prática como a IA junta letras para criar sua caixa de vocabulário</p>
+                </div>
+            </div>
+            
+            <!-- Indicador de Progresso do Vocabulário -->
+            <div class="flex items-center gap-4 bg-slate-800/80 px-4 py-2 rounded-xl border border-slate-700 w-full sm:w-auto justify-between sm:justify-end">
+                <div class="text-right">
+                    <span class="text-xs text-slate-400 block">Tamanho da Caixa (V)</span>
+                    <span id="vocabCountDisplay" class="mono font-bold text-emerald-400 text-lg">0 / 45</span>
+                </div>
+                <div class="h-8 w-px bg-slate-700"></div>
+                <div class="text-right">
+                    <span class="text-xs text-slate-400 block">Rodada (Fusão)</span>
+                    <span id="stepCountDisplay" class="mono font-bold text-amber-400 text-lg">0</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Conteúdo Principal -->
+    <main class="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+        <!-- Painel de Configuração e Controles -->
+        <section class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-end">
+                
+                <!-- Entrada do Corpus -->
+                <div class="lg:col-span-6 space-y-2">
+                    <label for="corpusInput" class="block text-sm font-semibold text-slate-300">
+                        1. Texto de Treinamento (Corpus)
+                    </label>
+                    <textarea id="corpusInput" rows="2" 
+                        class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-sm text-slate-100 focus:outline-none focus:border-emerald-500 transition"
+                        placeholder="Digite um texto para treinar...">o rato roeu a roupa do rei de roma e o computador comprou comida</textarea>
+                </div>
+
+                <!-- Tamanho Máximo do Vocabulário -->
+                <div class="lg:col-span-3 space-y-2">
+                    <div class="flex justify-between">
+                        <label for="maxVocabInput" class="text-sm font-semibold text-slate-300">
+                            2. Limite da Caixa (V)
+                        </label>
+                        <span id="maxVocabLabel" class="mono text-xs bg-slate-800 px-2 py-0.5 rounded text-emerald-400 font-bold">45 peças</span>
+                    </div>
+                    <input type="range" id="maxVocabInput" min="20" max="100" value="45" 
+                        class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500">
+                    <p class="text-[11px] text-slate-400">Define quando o algoritmo deve parar de juntar peças.</p>
+                </div>
+
+                <!-- Botões de Controle -->
+                <div class="lg:col-span-3 flex flex-wrap gap-2">
+                    <button id="btnReset" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold py-2.5 px-3 rounded-xl border border-slate-700 transition text-sm flex items-center justify-center gap-1.5 cursor-pointer">
+                        <span>🔄</span> Reiniciar
+                    </button>
+                    <button id="btnStep" class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 px-3 rounded-xl shadow-lg shadow-emerald-900/30 transition text-sm flex items-center justify-center gap-1.5 cursor-pointer">
+                        <span>⏭️</span> +1 Passo
+                    </button>
+                    <button id="btnAuto" class="w-full bg-amber-600 hover:bg-amber-500 text-white font-semibold py-2.5 px-4 rounded-xl shadow-lg shadow-amber-900/30 transition text-sm flex items-center justify-center gap-1.5 cursor-pointer">
+                        <span>▶️</span> Executar Automático
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Banner Explicativo do Passo Atual -->
+        <div id="statusBanner" class="bg-slate-800/90 border-l-4 border-emerald-500 rounded-r-xl p-4 flex items-center justify-between gap-4 shadow-md">
+            <div class="flex items-center gap-3">
+                <span id="statusIcon" class="text-2xl">💡</span>
+                <div>
+                    <h2 id="statusTitle" class="font-bold text-white text-sm sm:text-base">Pronto para começar!</h2>
+                    <p id="statusDescription" class="text-xs sm:text-sm text-slate-300 mt-0.5">
+                        O texto foi quebrado em letras individuais. Clique em <strong>"+1 Passo"</strong> para caçar a dupla mais frequente.
+                    </p>
+                </div>
+            </div>
+            <div class="hidden md:flex items-center gap-3 text-xs shrink-0">
+                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-amber-600 inline-block"></span> Próxima dupla</span>
+                <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-emerald-600 inline-block"></span> Recém-fundido</span>
+            </div>
+        </div>
+
+        <!-- Grid Principal de Visualização (3 Colunas) -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            <!-- PAINEL 1: Texto Tokenizado Atual (5 colunas) -->
+            <div class="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col h-[460px]">
+                <div class="flex items-center justify-between mb-3 pb-3 border-b border-slate-800">
+                    <div>
+                        <h3 class="font-bold text-white text-base flex items-center gap-2">
+                            <span>📝</span> Palavras no Texto
+                        </h3>
+                        <p class="text-xs text-slate-400">Como cada palavra está fatiada agora</p>
+                    </div>
+                    <span id="uniqueWordsBadge" class="text-xs bg-slate-800 text-slate-300 px-2.5 py-1 rounded-lg font-medium">0 palavras</span>
+                </div>
+                
+                <div id="wordsContainer" class="flex-grow overflow-y-auto space-y-2.5 pr-1">
+                    <!-- Palavras renderizadas via JS -->
+                </div>
+            </div>
+
+            <!-- PAINEL 2: Placar de Duplas / Detetive (4 colunas) -->
+            <div class="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col h-[460px]">
+                <div class="flex items-center justify-between mb-3 pb-3 border-b border-slate-800">
+                    <div>
+                        <h3 class="font-bold text-white text-base flex items-center gap-2">
+                            <span>🕵️</span> Placar de Duplas
+                        </h3>
+                        <p class="text-xs text-slate-400">Pares vizinhos mais frequentes</p>
+                    </div>
+                    <span class="text-xs bg-amber-500/10 text-amber-400 border border-amber-500/30 px-2.5 py-1 rounded-lg font-semibold">Top 10</span>
+                </div>
+
+                <div id="pairsContainer" class="flex-grow overflow-y-auto space-y-2 pr-1">
+                    <!-- Ranking de pares renderizado via JS -->
+                </div>
+            </div>
+
+            <!-- PAINEL 3: A Caixa de LEGO / Vocabulário (3 colunas) -->
+            <div class="lg:col-span-3 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col h-[460px]">
+                <div class="flex items-center justify-between mb-3 pb-3 border-b border-slate-800">
+                    <div>
+                        <h3 class="font-bold text-white text-base flex items-center gap-2">
+                            <span>📦</span> Caixa de LEGO
+                        </h3>
+                        <p class="text-xs text-slate-400">Peças disponíveis no vocabulário</p>
+                    </div>
+                </div>
+
+                <div id="vocabBoxContainer" class="flex-grow overflow-y-auto flex flex-wrap content-start gap-1.5 pr-1">
+                    <!-- Peças do vocabulário renderizadas via JS -->
+                </div>
+            </div>
+
+        </div>
+
+        <!-- PAINEL 4: Testador Interativo (Tokenizador ao Vivo) -->
+        <section class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+                <div>
+                    <h3 class="font-bold text-white text-base flex items-center gap-2">
+                        <span>🧪</span> Laboratório: Teste uma Palavra Nova!
+                    </h3>
+                    <p class="text-xs text-slate-400 mt-0.5">
+                        Digite qualquer palavra (mesmo inventada!) para ver como a IA a monta usando apenas as peças que já estão na Caixa de LEGO acima.
+                    </p>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="setTestWord('computador')" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1.5 rounded-lg border border-slate-700 transition cursor-pointer">computador</button>
+                    <button onclick="setTestWord('ratoeira')" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1.5 rounded-lg border border-slate-700 transition cursor-pointer">ratoeira</button>
+                    <button onclick="setTestWord('ramador')" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1.5 rounded-lg border border-slate-700 transition cursor-pointer">ramador (inventada)</button>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-6 items-center pt-4">
+                <div class="md:col-span-4">
+                    <label for="testWordInput" class="block text-xs font-semibold text-slate-400 mb-1.5 uppercase tracking-wider">Palavra de Teste</label>
+                    <input type="text" id="testWordInput" value="computador" 
+                        class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-white mono focus:outline-none focus:border-emerald-500 transition"
+                        placeholder="Ex: computador">
+                </div>
+                <div class="md:col-span-8">
+                    <span class="block text-xs font-semibold text-slate-400 mb-1.5 uppercase tracking-wider">Como o BPE divide essa palavra agora:</span>
+                    <div id="testResultContainer" class="min-h-[48px] bg-slate-950 border border-slate-800 rounded-xl p-2.5 flex flex-wrap items-center gap-1">
+                        <!-- Resultado da tokenização ao vivo -->
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Rodapé -->
+    <footer class="bg-slate-900 border-t border-slate-800 py-4 mt-8">
+        <div class="max-w-7xl mx-auto px-4 text-center text-xs text-slate-500">
+            Simulador Educacional de Byte-Pair Encoding (BPE) • O símbolo <code class="text-slate-400">_</code> representa o fim de uma palavra.
+        </div>
+    </footer>
+
+    <!-- Lógica Completa do Algoritmo BPE -->
+    <script>
+        // ==========================================
+        // ESTADO GLOBAL DA APLICAÇÃO
+        // ==========================================
+        let state = {
+            words: [],          // Array de objetos: { text: "rato", freq: 1, tokens: ["r", "a", "t", "o", "_"] }
+            vocab: [],          // Array de objetos: { token: "ra", step: 1, isBase: false }
+            merges: [],         // Histórico ordenado de fusões: [ { pair: ["r", "a"], result: "ra", step: 1 } ]
+            step: 0,            // Rodada atual
+            maxVocab: 45,       // Tamanho alvo do vocabulário
+            lastMergedToken: null, // Último token criado (para destaque verde)
+            nextBestPair: null, // Próxima dupla vencedora (para destaque âmbar)
+            isAutoRunning: false,
+            autoTimer: null,
+            isFinished: false
+        };
+
+        // Referências aos elementos do DOM
+        const dom = {
+            corpusInput: document.getElementById('corpusInput'),
+            maxVocabInput: document.getElementById('maxVocabInput'),
+            maxVocabLabel: document.getElementById('maxVocabLabel'),
+            vocabCountDisplay: document.getElementById('vocabCountDisplay'),
+            stepCountDisplay: document.getElementById('stepCountDisplay'),
+            btnReset: document.getElementById('btnReset'),
+            btnStep: document.getElementById('btnStep'),
+            btnAuto: document.getElementById('btnAuto'),
+            statusBanner: document.getElementById('statusBanner'),
+            statusIcon: document.getElementById('statusIcon'),
+            statusTitle: document.getElementById('statusTitle'),
+            statusDescription: document.getElementById('statusDescription'),
+            uniqueWordsBadge: document.getElementById('uniqueWordsBadge'),
+            wordsContainer: document.getElementById('wordsContainer'),
+            pairsContainer: document.getElementById('pairsContainer'),
+            vocabBoxContainer: document.getElementById('vocabBoxContainer'),
+            testWordInput: document.getElementById('testWordInput'),
+            testResultContainer: document.getElementById('testResultContainer')
+        };
+
+        // ==========================================
+        // FUNÇÕES PRINCIPAIS DO ALGORITMO BPE
+        // ==========================================
+
+        /**
+         * Inicializa ou reseta o estado do BPE a partir do texto digitado.
+         */
+        function initBPE() {
+            stopAuto();
+            
+            const rawText = dom.corpusInput.value.toLowerCase().trim();
+            state.maxVocab = parseInt(dom.maxVocabInput.value, 10);
+            state.step = 0;
+            state.merges = [];
+            state.lastMergedToken = null;
+            state.isFinished = false;
+
+            if (!rawText) {
+                state.words = [];
+                state.vocab = [];
+                state.nextBestPair = null;
+                updateUI();
+                return;
+            }
+
+            // Limpa pontuação básica e quebra em palavras
+            const cleanedWords = rawText
+                .replace(/[.,!?;:"()]/g, '')
+                .split(/\s+/)
+                .filter(w => w.length > 0);
+
+            // Conta frequência das palavras e inicia cada uma como letras individuais + "_" (fim de palavra)
+            const freqMap = new Map();
+            cleanedWords.forEach(w => {
+                freqMap.set(w, (freqMap.get(w) || 0) + 1);
+            });
+
+            state.words = Array.from(freqMap.entries()).map(([word, freq]) => ({
+                text: word,
+                freq: freq,
+                tokens: [...word.split(''), '_']
+            }));
+
+            // Extrai o vocabulário inicial (todos os caracteres únicos + '_')
+            const initialChars = new Set();
+            state.words.forEach(w => {
+                w.tokens.forEach(t => initialChars.add(t));
+            });
+
+            state.vocab = Array.from(initialChars).sort().map(char => ({
+                token: char,
+                step: 0,
+                isBase: true
+            }));
+
+            // Ajusta o limite mínimo do slider caso o texto tenha muitos caracteres únicos
+            if (state.maxVocab <= state.vocab.length) {
+                state.maxVocab = state.vocab.length + 10;
+                dom.maxVocabInput.value = state.maxVocab;
+                dom.maxVocabLabel.textContent = `${state.maxVocab} peças`;
+            }
+
+            // Calcula qual será a primeira dupla vencedora
+            const stats = getPairStats();
+            state.nextBestPair = stats.length > 0 ? stats[0].pair : null;
+
+            setStatus(
+                '💡',
+                'Pronto para começar! (Rodada 0)',
+                `O texto foi quebrado em ${state.vocab.length} caracteres básicos. Clique em "+1 Passo" para fundir a dupla mais frequente.`,
+                'border-emerald-500'
+            );
+
+            updateUI();
+        }
+
+        /**
+         * Conta a frequência de todas as duplas de tokens adjacentes no corpus atual.
+         */
+        function getPairStats() {
+            const pairCounts = new Map();
+
+            state.words.forEach(wordObj => {
+                const tokens = wordObj.tokens;
+                for (let i = 0; i < tokens.length - 1; i++) {
+                    const pairKey = `${tokens[i]}|||${tokens[i + 1]}`;
+                    pairCounts.set(pairKey, (pairCounts.get(pairKey) || 0) + wordObj.freq);
+                }
+            });
+
+            // Converte para array e ordena do maior para o menor
+            const sortedPairs = Array.from(pairCounts.entries())
+                .map(([key, count]) => {
+                    const [first, second] = key.split('|||');
+                    return { pair: [first, second], count };
+                })
+                .sort((a, b) => b.count - a.count);
+
+            return sortedPairs;
+        }
+
+        /**
+         * Executa UMA rodada (1 fusão) do algoritmo BPE.
+         */
+        function stepBPE() {
+            if (state.isFinished) return;
+
+            // Verifica se atingiu o tamanho máximo do vocabulário
+            if (state.vocab.length >= state.maxVocab) {
+                finishBPE('Limite da Caixa de LEGO atingido!');
+                return;
+            }
+
+            const stats = getPairStats();
+            if (stats.length === 0) {
+                finishBPE('Todas as palavras já viraram blocos únicos!');
+                return;
+            }
+
+            // A dupla campeã da rodada
+            const winner = stats[0];
+            const [t1, t2] = winner.pair;
+            const mergedToken = t1 + t2;
+
+            state.step += 1;
+            state.lastMergedToken = mergedToken;
+
+            // Registra a regra de fusão
+            state.merges.push({
+                pair: [t1, t2],
+                result: mergedToken,
+                step: state.step
+            });
+
+            // Adiciona a nova peça na Caixa de LEGO (Vocabulário)
+            state.vocab.push({
+                token: mergedToken,
+                step: state.step,
+                isBase: false
+            });
+
+            // Substitui a dupla separada pelo novo bloco fundido em todas as palavras do corpus
+            state.words.forEach(wordObj => {
+                const newTokens = [];
+                let i = 0;
+                while (i < wordObj.tokens.length) {
+                    if (i < wordObj.tokens.length - 1 && wordObj.tokens[i] === t1 && wordObj.tokens[i + 1] === t2) {
+                        newTokens.push(mergedToken);
+                        i += 2; // Pula os dois tokens fundidos
+                    } else {
+                        newTokens.push(wordObj.tokens[i]);
+                        i += 1;
+                    }
+                }
+                wordObj.tokens = newTokens;
+            });
+
+            // Recalcula o placar para descobrir quem será o próximo candidato
+            const nextStats = getPairStats();
+            state.nextBestPair = (nextStats.length > 0 && state.vocab.length < state.maxVocab) ? nextStats[0].pair : null;
+
+            // Atualiza banner explicativo
+            setStatus(
+                '🔨',
+                `Rodada ${state.step}: Nova peça criada!`,
+                `A dupla "${formatToken(t1)}" + "${formatToken(t2)}" venceu com ${winner.count} aparições e foi fundida no bloco "${formatToken(mergedToken)}".`,
+                'border-emerald-500'
+            );
+
+            // Verifica se acabou exatamente agora
+            if (state.vocab.length >= state.maxVocab || nextStats.length === 0) {
+                finishBPE(state.vocab.length >= state.maxVocab 
+                    ? `Caixa cheia! Atingimos o limite de ${state.maxVocab} peças.` 
+                    : 'Não há mais duplas para juntar!');
+            }
+
+            updateUI();
+        }
+
+        /**
+         * Finaliza o treinamento.
+         */
+        function finishBPE(reason) {
+            state.isFinished = true;
+            state.nextBestPair = null;
+            stopAuto();
+            setStatus(
+                '🎉',
+                'Treinamento Concluído!',
+                `${reason} O vocabulário agora está congelado e pronto para ler qualquer texto.`,
+                'border-blue-500'
+            );
+            updateUI();
+        }
+
+        // ==========================================
+        // TOKENIZADOR AO VIVO (TESTAR PALAVRA NOVA)
+        // ==========================================
+        function tokenizeNewWord(word) {
+            const clean = word.toLowerCase().trim().replace(/\s+/g, '');
+            if (!clean) return [];
+
+            // Começa quebrando a palavra nova em letras + marcador de fim '_'
+            let tokens = [...clean.split(''), '_'];
+
+            // Aplica exatamente as mesmas regras de fusão aprendidas, na ordem cronológica
+            for (const rule of state.merges) {
+                const [t1, t2] = rule.pair;
+                const newTokens = [];
+                let i = 0;
+                while (i < tokens.length) {
+                    if (i < tokens.length - 1 && tokens[i] === t1 && tokens[i + 1] === t2) {
+                        newTokens.push(rule.result);
+                        i += 2;
+                    } else {
+                        newTokens.push(tokens[i]);
+                        i += 1;
+                    }
+                }
+                tokens = newTokens;
+            }
+
+            return tokens;
+        }
+
+        // ==========================================
+        // ATUALIZAÇÃO DA INTERFACE (RENDERIZAÇÃO)
+        // ==========================================
+        function formatToken(t) {
+            return t === '_' ? '␣' : t;
+        }
+
+        function setStatus(icon, title, desc, borderClass) {
+            dom.statusIcon.textContent = icon;
+            dom.statusTitle.textContent = title;
+            dom.statusDescription.textContent = desc;
+            dom.statusBanner.className = `bg-slate-800/90 border-l-4 ${borderClass} rounded-r-xl p-4 flex items-center justify-between gap-4 shadow-md transition-all`;
+        }
+
+        function updateUI() {
+            // 1. Atualiza contadores do cabeçalho
+            dom.vocabCountDisplay.textContent = `${state.vocab.length} / ${state.maxVocab}`;
+            dom.stepCountDisplay.textContent = state.step;
+            dom.uniqueWordsBadge.textContent = `${state.words.length} palavras únicas`;
+
+            // Estado dos botões
+            dom.btnStep.disabled = state.isFinished;
+            dom.btnStep.classList.toggle('opacity-50', state.isFinished);
+            dom.btnStep.classList.toggle('cursor-not-allowed', state.isFinished);
+
+            // 2. Renderiza Painel 1: Palavras no Texto
+            dom.wordsContainer.innerHTML = '';
+            state.words.forEach(wordObj => {
+                const row = document.createElement('div');
+                row.className = 'bg-slate-950/70 border border-slate-800/80 rounded-xl p-2.5 flex flex-wrap items-center justify-between gap-2';
+
+                const tokensDiv = document.createElement('div');
+                tokensDiv.className = 'flex flex-wrap items-center';
+
+                wordObj.tokens.forEach((tok, idx) => {
+                    const span = document.createElement('span');
+                    let classes = 'token-block';
+                    
+                    if (tok === '_') classes += ' token-end';
+                    if (tok === state.lastMergedToken) classes += ' new-merge';
+                    
+                    // Verifica se faz parte da próxima dupla a ser fundida
+                    if (state.nextBestPair && !state.isFinished) {
+                        const [n1, n2] = state.nextBestPair;
+                        const isFirstOfPair = (tok === n1 && wordObj.tokens[idx + 1] === n2);
+                        const isSecondOfPair = (tok === n2 && wordObj.tokens[idx - 1] === n1);
+                        if (isFirstOfPair || isSecondOfPair) {
+                            classes += ' next-candidate';
+                        }
+                    }
+
+                    span.className = classes;
+                    span.textContent = formatToken(tok);
+                    span.title = tok === '_' ? 'Fim da palavra' : `Token: "${tok}"`;
+                    tokensDiv.appendChild(span);
+                });
+
+                const freqBadge = document.createElement('span');
+                freqBadge.className = 'text-[11px] mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800 shrink-0';
+                freqBadge.textContent = `${wordObj.freq}x`;
+                freqBadge.title = `Aparece ${wordObj.freq} vez(es) no texto`;
+
+                row.appendChild(tokensDiv);
+                row.appendChild(freqBadge);
+                dom.wordsContainer.appendChild(row);
+            });
+
+            // 3. Renderiza Painel 2: Placar de Duplas
+            const stats = getPairStats();
+            dom.pairsContainer.innerHTML = '';
+            
+            if (stats.length === 0) {
+                dom.pairsContainer.innerHTML = `<div class="text-center text-slate-500 text-sm py-10">Nenhuma dupla adjacente restante.</div>`;
+            } else {
+                const maxCount = stats[0].count;
+                stats.slice(0, 10).forEach((item, index) => {
+                    const isWinner = index === 0 && !state.isFinished;
+                    const percentage = Math.max(8, Math.round((item.count / maxCount) * 100));
+
+                    const card = document.createElement('div');
+                    card.className = `p-2.5 rounded-xl border ${isWinner ? 'bg-amber-950/30 border-amber-500/50' : 'bg-slate-950/60 border-slate-800/80'} relative overflow-hidden`;
+
+                    card.innerHTML = `
+                        <div class="flex items-center justify-between relative z-10 mb-1.5">
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs font-bold mono ${isWinner ? 'text-amber-400' : 'text-slate-500'}">#${index + 1}</span>
+                                <span class="mono text-sm font-bold text-white bg-slate-800 px-2 py-0.5 rounded border border-slate-700">${formatToken(item.pair[0])}</span>
+                                <span class="text-slate-500 text-xs">+</span>
+                                <span class="mono text-sm font-bold text-white bg-slate-800 px-2 py-0.5 rounded border border-slate-700">${formatToken(item.pair[1])}</span>
+                                ${isWinner ? '<span class="text-[10px] bg-amber-500 text-slate-950 font-extrabold px-1.5 py-0.5 rounded uppercase">Próximo</span>' : ''}
+                            </div>
+                            <span class="mono text-xs font-bold ${isWinner ? 'text-amber-400' : 'text-slate-300'}">${item.count}x</span>
+                        </div>
+                        <div class="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden">
+                            <div class="progress-bar-fill h-full ${isWinner ? 'bg-amber-500' : 'bg-slate-600'}" style="width: ${percentage}%"></div>
+                        </div>
+                    `;
+                    dom.pairsContainer.appendChild(card);
+                });
+            }
+
+            // 4. Renderiza Painel 3: Caixa de LEGO (Vocabulário)
+            dom.vocabBoxContainer.innerHTML = '';
+            // Mostra os tokens mais recentes primeiro ou em ordem de criação
+            const reversedVocab = [...state.vocab].reverse();
+            reversedVocab.forEach(v => {
+                const chip = document.createElement('div');
+                const isRecent = v.token === state.lastMergedToken;
+                
+                chip.className = `inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg mono text-xs font-bold border ${
+                    isRecent 
+                        ? 'bg-emerald-600 border-emerald-400 text-white shadow-lg shadow-emerald-900/50 scale-105' 
+                        : v.isBase 
+                            ? 'bg-slate-950 border-slate-800 text-slate-400' 
+                            : 'bg-slate-800 border-slate-700 text-emerald-300'
+                } transition-all`;
+
+                chip.innerHTML = `
+                    <span>${formatToken(v.token)}</span>
+                    ${!v.isBase ? `<span class="text-[9px] opacity-75 bg-black/30 px-1 rounded">#${v.step}</span>` : ''}
+                `;
+                chip.title = v.isBase ? 'Caractere inicial' : `Criado na rodada #${v.step}`;
+                dom.vocabBoxContainer.appendChild(chip);
+            });
+
+            // 5. Atualiza Painel 4: Laboratório de Teste
+            updateTestWordUI();
+        }
+
+        function updateTestWordUI() {
+            const word = dom.testWordInput.value;
+            const tokens = tokenizeNewWord(word);
+            dom.testResultContainer.innerHTML = '';
+
+            if (tokens.length === 0) {
+                dom.testResultContainer.innerHTML = '<span class="text-xs text-slate-500 italic">Digite uma palavra ao lado...</span>';
+                return;
+            }
+
+            tokens.forEach(tok => {
+                const span = document.createElement('span');
+                const isLearned = tok.length > 1;
+                span.className = `token-block ${tok === '_' ? 'token-end' : ''} ${isLearned ? '!border-emerald-500/60 !text-emerald-300' : ''}`;
+                span.textContent = formatToken(tok);
+                span.title = isLearned ? 'Bloco composto aprendido pelo BPE!' : 'Letra individual (não houve bloco maior)';
+                dom.testResultContainer.appendChild(span);
+            });
+
+            // Mostra contagem de blocos usados
+            const info = document.createElement('span');
+            info.className = 'ml-auto text-xs text-slate-400 mono';
+            info.textContent = `(${tokens.length} blocos)`;
+            dom.testResultContainer.appendChild(info);
+        }
+
+        // ==========================================
+        // CONTROLES DE EXECUÇÃO AUTOMÁTICA E EVENTOS
+        // ==========================================
+        function toggleAuto() {
+            if (state.isAutoRunning) {
+                stopAuto();
+            } else {
+                if (state.isFinished) initBPE();
+                state.isAutoRunning = true;
+                dom.btnAuto.innerHTML = '<span>⏸️</span> Pausar';
+                dom.btnAuto.classList.replace('bg-amber-600', 'bg-rose-600');
+                dom.btnAuto.classList.replace('hover:bg-amber-500', 'hover:bg-rose-500');
+                
+                state.autoTimer = setInterval(() => {
+                    if (state.isFinished) {
+                        stopAuto();
+                    } else {
+                        stepBPE();
+                    }
+                }, 650);
+            }
+        }
+
+        function stopAuto() {
+            state.isAutoRunning = false;
+            clearInterval(state.autoTimer);
+            dom.btnAuto.innerHTML = '<span>▶️</span> Executar Automático';
+            dom.btnAuto.classList.replace('bg-rose-600', 'bg-amber-600');
+            dom.btnAuto.classList.replace('hover:bg-rose-500', 'hover:bg-amber-500');
+        }
+
+        function setTestWord(w) {
+            dom.testWordInput.value = w;
+            updateTestWordUI();
+        }
+
+        // Listeners
+        dom.maxVocabInput.addEventListener('input', (e) => {
+            dom.maxVocabLabel.textContent = `${e.target.value} peças`;
+            state.maxVocab = parseInt(e.target.value, 10);
+            if (state.step === 0) {
+                initBPE();
+            } else {
+                updateUI();
+            }
+        });
+
+        dom.corpusInput.addEventListener('input', () => {
+            initBPE();
+        });
+
+        dom.btnReset.addEventListener('click', initBPE);
+        dom.btnStep.addEventListener('click', () => {
+            stopAuto();
+            stepBPE();
+        });
+        dom.btnAuto.addEventListener('click', toggleAuto);
+        dom.testWordInput.addEventListener('input', updateTestWordUI);
+
+        // Inicializa ao carregar a página
+        window.addEventListener('DOMContentLoaded', initBPE);
+    </script>
+</body>
+</html>
